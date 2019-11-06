@@ -1,0 +1,478 @@
+---
+title: "Prediction Project 2"
+author: "Stella Veazey"
+date: "5/12/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Importing and recoding:
+
+```{r}
+# load the dataset
+library(RCurl)
+urlfile <- "https://archive.ics.uci.edu/ml/machine-learning-databases/breast-cancer-wisconsin/breast-cancer-wisconsin.data"
+# download the file
+downloaded <- getURL(urlfile, ssl.verifypeer = FALSE)
+connection <- textConnection(downloaded)
+# parse the downloaded data as CSV
+dataset <- read.csv(connection, header = FALSE)
+# preview the first 5 rows
+head(dataset)
+
+# change variable names
+names(dataset) <- c("id", "clump.thick", "uni.size", 
+    "uni.shape", "marg.adh", "se.size", "bare.nuc", 
+    "bland.chrom", "norm.nuc", "mitoses", "malignant")
+
+# recode malignant to 0/1
+dataset$malignant <- ifelse(dataset$malignant == 2, 
+    0, 1)
+```
+
+Exploratory analysis:
+
+```{r}
+# describe data
+library(Hmisc)
+describe(dataset)
+
+#16 missing values in bare.nuc
+```
+
+Examining missing values:
+```{r}
+library(mice)
+library(VIM)
+
+# Code missings as NA
+library(naniar)
+dataset <- dataset %>% replace_with_na(replace = list(bare.nuc = "?"))
+dataset$bare.nuc <- as.numeric(dataset$bare.nuc)
+
+# Breaking data into training and test sets
+library(ElemStatLearn) 
+set.seed(8655)
+nx <- seq_len(nrow(dataset))
+test.set <- sample(nx, 233)
+test <- dataset[test.set,-1]
+train <- dataset[-test.set,-1]
+
+# logistic regression for missingingness
+miss <- ifelse(is.na(train$bare.nuc), 1, 0)
+miss.reg <- glm(miss ~ clump.thick + uni.size + uni.shape + 
+    marg.adh + se.size + bland.chrom + norm.nuc + mitoses + 
+    malignant, data = train, family = "binomial")
+summary(miss.reg)
+
+# pbox (4, 9, 11)
+pbox(train, pos=1)
+pbox(train, pos=3)
+pbox(train, pos=11)
+
+# It looks like the missingness in this variable is not MCAR. I can't think of a mechanism by which it would be MNAR, so I'll go ahead and impute. 
+
+# Impute using MICE
+
+# Removing ID variable for imputation
+dat.impute <- train
+
+# Impute using predictive mean matching
+dat.mult.imputed <- mice(dat.impute, m=5, maxit=50, meth='pmm', seed=444)
+
+# Check imputations
+summary(dat.mult.imputed)
+dat.mult.imputed$imp$bare.nuc
+
+# Plots to check imputation
+densityplot(dat.mult.imputed, ~bare.nuc)
+
+xyplot(dat.mult.imputed, malignant ~ bare.nuc | .imp, pch = 20, cex = 1)
+
+stripplot(dat.mult.imputed, pch = 1, cex = 1)
+```
+
+Imputing on the whole dataset:
+
+```{r}
+# load the dataset
+library(RCurl)
+urlfile <- "https://archive.ics.uci.edu/ml/machine-learning-databases/breast-cancer-wisconsin/breast-cancer-wisconsin.data"
+# download the file
+downloaded <- getURL(urlfile, ssl.verifypeer = FALSE)
+connection <- textConnection(downloaded)
+# parse the downloaded data as CSV
+dataset <- read.csv(connection, header = FALSE)
+# preview the first 5 rows
+head(dataset)
+
+# change variable names
+names(dataset) <- c("id", "clump.thick", "uni.size", 
+    "uni.shape", "marg.adh", "se.size", "bare.nuc", 
+    "bland.chrom", "norm.nuc", "mitoses", "malignant")
+
+# recode malignant to 0/1
+dataset$malignant <- ifelse(dataset$malignant == 2, 
+    0, 1)
+
+library(mice)
+library(VIM)
+
+# Code missings as NA
+library(naniar)
+dataset <- dataset %>% replace_with_na(replace = list(bare.nuc = "?"))
+dataset$bare.nuc <- as.numeric(dataset$bare.nuc)
+
+# logistic regression for missingingness
+miss.all <- ifelse(is.na(dataset$bare.nuc), 1, 0)
+miss.reg <- glm(factor(miss.all) ~ dataset$clump.thick + dataset$uni.size + dataset$uni.shape + 
+    dataset$marg.adh + dataset$se.size + dataset$bland.chrom + dataset$norm.nuc + dataset$mitoses + 
+    dataset$malignant, data = dataset, family = "binomial")
+summary(miss.reg)
+
+# pbox (4, 9, 11)
+pbox(dataset, pos=1)
+pbox(dataset, pos=3)
+pbox(dataset, pos=11)
+
+# It looks like the missingness in this variable is not MCAR. I can't think of a mechanism by which it would be MNAR, so I'll go ahead and impute. Associated with: uni.shape, norm.nuc, malignant
+
+# Impute using MICE
+
+# Removing ID variable for imputation
+dat.impute.all <- dataset[,-1]
+
+# Impute using predictive mean matching
+dat.mult.imputed <- mice(dat.impute.all, m=5, maxit=50, meth='pmm', seed=444)
+
+# Check imputations
+summary(dat.mult.imputed)
+dat.mult.imputed$imp$bare.nuc
+
+# Plots to check imputation
+densityplot(dat.mult.imputed, ~bare.nuc)
+
+xyplot(dat.mult.imputed, malignant ~ bare.nuc | .imp, pch = 20, cex = 1)
+
+stripplot(dat.mult.imputed, pch = 1, cex = 1)
+
+# Creating potential quadratic terms 
+clump.thick.sq <- (train$clump.thick)^2
+uni.shape.sq <- (train$uni.shape)^2
+marg.adh.sq <- (train$marg.adh)^2
+bland.chrom.sq <- (train$bland.chrom)^2
+bland.chrom.cu <- (train$bland.chrom)^3
+norm.nuc.sq <- (train$norm.nuc)^2
+
+# Stepwise Regression with ONE imputed dataset
+#grabbing 1st imputed dataset:
+completed <- mice::complete(dat.mult.imputed,1)
+
+
+# Stepwise:
+set.seed(44)
+null = glm(as.factor(malignant) ~ 1, data = completed, family = "binomial")
+full = glm(as.factor(malignant) ~ clump.thick + clump.thick.sq + 
+    uni.size + uni.shape + uni.shape.sq + marg.adh + 
+    marg.adh.sq + se.size + bare.nuc + bland.chrom + 
+    bland.chrom.sq + bland.chrom.cu + norm.nuc + norm.nuc.sq + 
+    mitoses + uni.size:uni.shape, data = completed, 
+    family = "binomial")
+step(null, scope=list(lower=null, upper=full), direction="both")
+
+
+```
+
+Examine nonlinear trends:
+
+```{r}
+# pairwise plots for collinearity
+library(ElemStatLearn)
+
+covariates <- as.matrix(cbind(train$clump.thick, 
+    train$uni.size, train$uni.shape, train$marg.adh, 
+    train$se.size, train$bare.nuc, train$bland.chrom, 
+    train$norm.nuc, train$mitoses))
+mx.dat <- as.matrix(cbind(train$clump.thick, train$uni.size, 
+    train$uni.shape, train$marg.adh, train$se.size, 
+    train$bare.nuc, train$bland.chrom, train$norm.nuc, 
+    train$mitoses, train$malignant))
+colnames(covariates) <- c("clump.thick", "uni.size", 
+    "uni.shape", "marg.adh", "se.size", "bare.nuc", 
+    "bland.chrom", "norm.nuc", "mitoses")
+colnames(mx.dat) <- c("clump.thick", "uni.size", "uni.shape", 
+    "marg.adh", "se.size", "bare.nuc", "bland.chrom", 
+    "norm.nuc", "mitoses", "malignant")
+
+# plots to detect nonlinearity
+par(mfrow = c(3, 3))
+plot(train$clump.thick, train$malignant)
+lines(lowess(train$clump.thick, train$malignant), 
+    col = "magenta")
+
+plot(train$uni.size, train$malignant)
+lines(lowess(train$uni.size, train$malignant), 
+    col = "magenta")
+
+plot(train$uni.shape, train$malignant)
+lines(lowess(train$uni.shape, train$malignant), 
+    col = "magenta")
+
+plot(train$marg.adh, train$malignant)
+lines(lowess(train$marg.adh, train$malignant), 
+    col = "magenta")
+
+plot(train$se.size, train$malignant)
+lines(lowess(train$se.size, train$malignant), col = "magenta")
+
+plot(train$bland.chrom, train$malignant)
+lines(lowess(train$bland.chrom, train$malignant), 
+    col = "magenta")
+
+plot(train$norm.nuc, train$malignant)
+lines(lowess(train$norm.nuc, train$malignant), 
+    col = "magenta")
+
+plot(train$mitoses, train$malignant)
+lines(lowess(train$mitoses, train$malignant), col = "magenta")
+
+# It looks like we might have nonlinearity in clump.thick, uni.shape, marg.adh, bland.chrom (3), norm.nuc
+
+xyplot(dat.mult.imputed, malignant ~ bare.nuc)
+```
+
+
+Binomial GLM:
+
+```{r}
+library(rms)
+
+# Creating potential quadratic terms 
+clump.thick.sq <- (train$clump.thick)^2
+uni.shape.sq <- (train$uni.shape)^2
+marg.adh.sq <- (train$marg.adh)^2
+bland.chrom.sq <- (train$bland.chrom)^2
+bland.chrom.cu <- (train$bland.chrom)^3
+norm.nuc.sq <- (train$norm.nuc)^2
+
+# Stepwise Regression with ONE imputed dataset
+#grabbing 1st imputed dataset:
+completed <- mice::complete(dat.mult.imputed,1)
+
+# Stepwise:
+set.seed(44)
+null = glm(as.factor(malignant) ~ 1, data = completed, family = "binomial")
+full = glm(as.factor(malignant) ~ clump.thick + clump.thick.sq + 
+    uni.size + uni.shape + uni.shape.sq + marg.adh + 
+    marg.adh.sq + se.size + bare.nuc + bland.chrom + 
+    bland.chrom.sq + bland.chrom.cu + norm.nuc + norm.nuc.sq + 
+    mitoses + uni.size:uni.shape, data = completed, 
+    family = "binomial")
+step(null, scope=list(lower=null, upper=full), direction="both")
+
+ 
+# Check for collinearity in final model
+# Also adding lower order terms: clump.thick, uni.shape
+
+final.mod.completed <- glm(formula = as.factor(malignant) ~ 
+    uni.shape + bland.chrom + clump.thick + clump.thick.sq + marg.adh + 
+        bare.nuc + uni.shape + uni.shape.sq + mitoses, family = "binomial", 
+    data = completed)
+summary(final.mod.completed)
+vif(final.mod.completed)
+
+#collinearity issue in polynomial terms
+
+final.mod.completed <- glm(formula = as.factor(malignant) ~ 
+    uni.shape + bland.chrom + clump.thick + marg.adh + 
+        bare.nuc + uni.shape + mitoses, family = "binomial", 
+    data = completed)
+
+#comparing model with higher order terms to one without for all imputed datsets
+mod1 <- with(dat.mult.imputed, glm(malignant ~ clump.thick + 
+    clump.thick.sq + uni.size + uni.shape + uni.shape.sq + 
+    marg.adh + marg.adh.sq + se.size + bare.nuc + bland.chrom + 
+    bland.chrom.sq + bland.chrom.cu + norm.nuc + norm.nuc.sq + 
+    mitoses, family = "binomial"))
+
+mod2 <- with(dat.mult.imputed, glm(malignant ~ 
+    uni.shape + bland.chrom + clump.thick + marg.adh + 
+        bare.nuc + uni.shape + mitoses, 
+    family = "binomial"))
+
+pool.compare(mod1, mod2, data = dat.mult.imputed, method = "likelihood")
+
+# Final logitsitic model
+train.dat <- train
+train.dat$malignant <- ifelse(train.dat$malignant==0, "no", "yes")
+
+mod.fit <- with(dat.mult.imputed, glm(as.factor(malignant) ~ uni.shape + bland.chrom + clump.thick + marg.adh + bare.nuc + uni.shape + mitoses, family="binomial"))
+
+fin.mod <- pool(mod.fit)
+
+predict(fin.mod)
+
+#cv.glm(data, mod.fit, cost, K)
+
+coeffs <- fin.mod$qbar
+
+train.cases <- data.frame(cbind(rep(1, 466), train$uni.shape, 
+    train$bland.chrom, train$clump.thick,
+    train$marg.adh, train$bare.nuc, train$uni.shape, train$mitoses))
+
+colnames(train.cases) <- c("X1", "X2", "X3", "X4", "X5", "X6", "X7", "X8")
+
+train.cases$lodds <- train.cases$X1 * coeffs[1] + train.cases$X2 * coeffs[2] + train.cases$X3 * coeffs[3] + train.cases$X4 * coeffs[4] + train.cases$X5 * coeffs[5] + train.cases$X6 * coeffs[6] + train.cases$X7 * coeffs[7] + train.cases$X8 * coeffs[8]
+
+train.cases$yhat <- exp(train.cases$lodds)/(1 + exp(train.cases$lodds))
+
+library(pROC)
+
+roc1 <- plot(roc(train$malignant, train.cases$yhat, direction = "<"), 
+    col = "blue", lwd = 3, main = "", print.auc = TRUE, print.thres=.202)
+
+coords(roc1, x = "best", best.method = "youden", ret = c("threshold", 
+    "specificity", "sensitivity", "accuracy", "npv", 
+    "ppv", "fn", "fp"))
+
+# Test model on holdout set
+newCases <- data.frame(cbind(rep(1, 233), test$uni.shape, 
+    test$bland.chrom, test$clump.thick, test$bare.nuc, 
+    test$marg.adh))
+
+attach(newCases)
+newCases$lodds <- X1 * coeffs[1] + X2 * coeffs[2] + 
+    X3 * coeffs[3] + X4 * coeffs[4] + X5 * coeffs[5] + 
+    X6 * coeffs[6]
+
+newCases$yhat <- exp(newCases$lodds)/(1 + exp(newCases$lodds))
+
+roc2 <- plot(roc(test$malignant, newCases$yhat, direction = "<"), 
+    col = "blue", lwd = 3, main = "", print.auc = TRUE, 
+    print.thres = 0.354)
+
+coords(roc2, x = "best", best.method = "youden", ret = c("threshold", 
+    "specificity", "sensitivity", "accuracy", "npv", 
+    "ppv", "fn", "fp"))
+
+```
+
+SVM
+
+```{r}
+library(caret)
+xvars <- as.matrix(completed[,c(1:9)])
+
+ctrl <- trainControl(method="repeatedcv",   # 10fold cross validation
+                     repeats=5,		    # do 5 repititions of cv
+                     summaryFunction=twoClassSummary,	# Use AUC to pick the bestmodel
+                     classProbs=TRUE)
+
+#RBF tune for SVM
+completed$malignant <- ifelse(completed$malignant==0, "no", "yes")
+
+# SVM on one imputed dataset
+
+set.seed(622)
+svm.tune <- train(x=xvars, y=as.factor(completed$malignant),
+                  method = "svmRadial",
+                  preProc = c("center","scale"),  # Center and scale data
+                  metric="ROC",
+                  data=completed,
+                  trControl=ctrl)
+
+
+svm.tune
+
+grid <- expand.grid(sigma = c(.04, .06, 0.08, .1, .12),
+                   C = c(0.4, .45, .5, .55, .6))
+
+set.seed(1056)
+svm.tune2 <- train(x=xvars, y=completed$malignant,
+                  method = "svmRadial",
+                  preProc = c("center","scale"),  # Center and scale data
+                  metric="ROC",
+                  data=completed,
+                  tuneGrid = grid,
+                  trControl=ctrl)
+
+svm.tune
+
+
+svm.yhat <- predict.train(svm.tune, newdata=test)
+
+#SVM on whole dataset, imputing missing values with KNN
+xvars.all <- data.matrix(dataset[,-c(1, 11)])
+malig <- ifelse(dataset$malignant==0, "no", "yes")
+
+svm.tune.all <- train(x=xvars.all, y=factor(malig),
+                  method = "svmRadial",
+                  preProc = c("center","scale"),  # Center and scale data
+                  metric="ROC",
+                  data=dataset,
+                  trControl=ctrl,
+                  preProcess = "knnImpute",
+                  na.action = na.pass)
+
+
+# train only
+xvars.train <- data.matrix(dataset[-test.set,-c(1, 11)])
+malig.train <- malig[-test.set]
+train.dat.svm <- dataset[-test.set,-1]
+
+svm.tune.train <- train(x=xvars.train, y=factor(malig.train),
+                  method = "svmRadial",
+                  metric="ROC",
+                  data=train.dat.svm,
+                  trControl=ctrl,
+                  preProcess = "knnImpute",
+                  na.action = na.pass)
+
+svm.tune.train
+
+# trying to test
+xvars.test <- dataset[test.set,-c(1, 11)]
+malig.test <- as.factor(malig[test.set])
+test.dat.svm <- na.omit(cbind(xvars.test, malig.test))
+
+svm.pred <- predict(svm.tune.train, newdata=test.dat.svm, type="prob")
+```
+
+```{r}
+library(lime)
+
+#explanation
+explainer1 <- lime(test, svm.tune)
+explanation1 <- explain(test, explainer1, n_labels=1, n_features=4)
+
+head(explanation1)
+
+#plot
+#must pick rows in mutliples of number of features to see all features for each prediction (1-4 gives explanation based on all 4 features for obs. 1)
+n.features <- c(1:8, 53:56, 61:64)
+plot_features(explanation1[n.features,], ncol=2)
+```
+
+```{r}
+library(lime)
+predict_model(svm.linear, dataset, 'prob')
+
+set.seed(3033)
+intrain <- createDataPartition(y = dataset$malignant.yn, p= 0.666, list = FALSE)
+training <- na.omit(dataset[intrain,-c(1, 11)])
+testing <- na.omit(dataset[-intrain,-c(1, 11)])
+
+#explanation
+explainer1 <- lime(training, svm.rbf)
+explanation1 <- explain(testing, as_classifier(explainer1), n_labels=1, n_features=4)
+
+head(explanation1)
+
+#plot
+#must pick rows in mutliples of number of features to see all features for each prediction (1-4 gives explanation based on all 4 features for obs. 1)
+n.features <- c(1:8, 53:56, 61:64)
+plot_features(explanation1[n.features,], ncol=2)
+```

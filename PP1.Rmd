@@ -1,0 +1,345 @@
+---
+title: "Prediciton Project 1"
+author: "Stella Veazey"
+date: "4/20/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(Hmisc)
+library(caret)
+library(pROC)
+thorsurg <- read.csv("~/Desktop/Predictive/project 1/ThoraricSurgery.arff.txt", header=FALSE)
+names(thorsurg) <- c("DGN", "FVC", "FEV1", "PRZ", "pre.pain", "pre.haem", "pre.dysp", "pre.cough", "pre.weak", "TNM", "T2DM", "MI6", "PAD", "smoke", "asthma", "AGE", "RISK1YR")
+
+describe(thorsurg)
+
+#near zero variance predictors
+nzv <- nearZeroVar(thorsurg, saveMetrics = TRUE)
+nzv[nzv$nzv,][1:3,]
+
+#mycardial infarction lasrt 6 months
+table(thorsurg$MI6==1,thorsurg$RISK1YR)
+
+#asthma
+table(thorsurg$asthma==1, thorsurg$RISK1YR)
+
+#peripheral arterial diseases
+table(thorsurg$PAD==1, thorsurg$RISK1YR)
+```
+Notes:
+
+*DGN1, DGN5, DGN4, DGN8 are sparse
+
+*PRZ 2 only 27 (Performance status - Zubrod scale)
+
+*pre.pain true = 27
+
+*pre.haem true = 68
+
+*pre.dysp = true for 31
+
+*TNM (tumor size) oc13 = 19 and oc14=17 (largest sizes)
+
+*T2DM (diabetes) true=35
+
+*MI6 (heart) true=2
+
+*PAD true=8
+
+*asthma true = 2
+
+*Risk1yr true=70
+
+```{r}
+#recoding
+thorsurg$RISK1YR <- ifelse(thorsurg$RISK1YR=="TRUE", 1, 0)
+thorsurg$asthma <- ifelse(thorsurg$asthma=="TRUE", 1, 0)
+thorsurg$smoke <- ifelse(thorsurg$smoke=="TRUE", 1, 0)
+thorsurg$PAD <- ifelse(thorsurg$PAD=="TRUE", 1, 0)
+thorsurg$MI6 <- ifelse(thorsurg$MI6=="TRUE", 1, 0)
+thorsurg$T2DM <- ifelse(thorsurg$T2DM=="TRUE", 1, 0)
+thorsurg$pre.weak <- ifelse(thorsurg$pre.weak=="TRUE", 1, 0)
+thorsurg$pre.cough <- ifelse(thorsurg$pre.cough=="TRUE", 1, 0)
+thorsurg$pre.dysp <- ifelse(thorsurg$pre.dysp=="TRUE", 1, 0)
+thorsurg$pre.haem <- ifelse(thorsurg$pre.haem=="TRUE", 1, 0)
+thorsurg$pre.pain <- ifelse(thorsurg$pre.pain=="TRUE", 1, 0)
+
+thorsurg$DGN <- ifelse(thorsurg$DGN=="DGN1", 1, ifelse(thorsurg$DGN=="DGN2", 2, ifelse(thorsurg$DGN=="DGN3", 3, ifelse(thorsurg$DGN=="DGN4", 4, ifelse(thorsurg$DGN=="DGN5", 5, ifelse(thorsurg$DGN=="DGN6", 6, ifelse(thorsurg$DGN=="DGN7", 7, 8)))))))
+
+thorsurg$PRZ <- ifelse(thorsurg$PRZ=="PRZ0", 0, ifelse(thorsurg$PRZ=="PRZ1", 1, 2))
+
+thorsurg$TNM <- ifelse(thorsurg$TNM=="OC11", 1, ifelse(thorsurg$TNM=="OC12", 2, ifelse(thorsurg$DGN=="OC13", 3, 4)))
+
+feature.names=names(thorsurg)
+for (f in feature.names) {
+  if (class(thorsurg[[f]])=="factor") {
+    levels <- unique(c(thorsurg[[f]]))
+    train[[f]] <- factor(thorsurg[[f]],
+                   labels=make.names(levels))
+  }
+}
+
+#caret was being weird about the levels of the output variable not being appropriate variable names when I was playing with a tree model, hence this:
+thorsurg$RISK1YR <- ifelse(thorsurg$RISK1YR==1, "died", "lived")
+```
+
+LASSO (smote-free) 
+AUC: 0.729
+Youden threshold: 0.130
+Specificity: 0.555
+Sensitivity: 0.786
+
+```{r}
+library(glmnet)
+library(Matrix)
+
+#dropped MI6 and asthma because their very low variance would not allow model to run
+xvars <-thorsurg[,-c(12,15,17)] 
+
+x <- as.matrix(xvars)
+y <- thorsurg$RISK1YR
+
+ctrl <- trainControl(method="repeatedcv",   # 10fold cross validation
+                     repeats=5,		    # do 5 repititions of cv
+                     summaryFunction=twoClassSummary,	# Use AUC to pick the bestmodel
+                     classProbs=TRUE)
+
+#lasso
+set.seed(1953)
+lasso1 <- train(x=xvars, y=thorsurg$RISK1YR, method="glmnet", trControl=ctrl, metric="ROC")
+
+#variable importance
+importance <- varImp(lasso1, scale = FALSE)
+plot(importance)
+
+#ROC
+pred.l1 <- predict(lasso1, type="prob")
+risk.num <- as.numeric(ifelse(thorsurg$RISK1YR=="died", 1, 0))
+summary(pred.l1)
+roc.l1 <- roc(risk.num, pred.l1[,1])
+
+#Youden's
+youd.l1 <- coords(roc.l1, x = "best", best.method = "youden", ret = c("threshold", "specificity", "sensitivity", "accuracy", "npv", "ppv", "fn", "fp"))
+round(youd.l1,2)
+yl1<-round(youd.l1[1],2)
+
+
+#plot
+plot(roc.l1,print.thres=yl1, print.auc=TRUE)
+```
+
+Lasso with SMOTE
+
+AUC: 0.719
+
+Sensitivity: 0.729
+
+Specificity: 0.613
+```{r}
+ctrl.smote <- trainControl(method="repeatedcv", 
+                     number=10,
+                     repeats=3,
+                     classProbs=T,
+                     summaryFunction=twoClassSummary,
+                     sampling="smote")
+
+set.seed(27)
+lasso2 <- train(x=xvars, y=thorsurg$RISK1YR, method="glmnet", trControl=ctrl.smote, metric="ROC")
+
+#variable importance
+importance <- varImp(lasso2, scale = FALSE)
+plot(importance)
+
+#ROC
+pred.l2 <- predict(lasso2, type="prob")
+roc.l2 <- roc(risk.num, pred.l2[,1])
+
+#Youden's
+youd.l2 <- coords(roc.l2, x = "best", best.method = "youden", ret = c("threshold", "specificity", "sensitivity", "accuracy", "npv", "ppv", "fn", "fp"))
+round(youd.l2,2)
+yl2<-round(youd.l2[1],2)
+
+#plot
+plot(roc.l2,print.thres=yl2,print.auc=TRUE)
+
+#confusion matrices
+library(SDMTools)
+confusion.matrix(risk.num, pred.l1[,1], threshold=yl1)
+confusion.matrix(risk.num, pred.l2[,1], threshold=yl2)
+```
+
+
+Random Forest 
+```{r, eval=FALSE, echo=FALSE}
+library(randomForest)
+
+ctrl <- trainControl(method="repeatedcv",   # 10fold cross validation
+                     repeats=5,		    # do 5 repititions of cv
+                     summaryFunction=twoClassSummary,	# Use AUC to pick the bestmodel
+                     classProbs=TRUE)
+
+rf1 <- train(x=thorsurg[,-17], y=factor(thorsurg$RISK1YR), method="rf", trControl=ctrl)
+
+rf1.pred <- predict(rf1, thorsurg, type="prob")
+summary(rf1.pred)
+
+t1prb <- predict(tree1$finalModel, thorsurg)
+plot(tree2$finalModel)
+text(tree2$finalModel)
+
+library(pROC)
+auc <- roc(t2pred, thorsurg, type="class")
+```
+
+SVM 
+
+AUC: 0.988
+
+Sensitivity: 0.829
+
+Specificity: 0.99
+
+```{r}
+#code from https://www.r-bloggers.com/the-5th-tribe-support-vector-machines-and-caret/
+library(dplyr)     
+library(kernlab)       
+
+set.seed(1492)
+
+#SVM
+svm.tune1 <- train(x=xvars,
+                  y= thorsurg$RISK1YR,
+                  method = "svmRadial",   # Radial kernel
+                  tuneLength = 9,					# 9 values of the cost function
+                  preProc = c("center","scale"),  # Center and scale data
+                  metric="ROC",
+                  trControl=ctrl)
+
+svm.tune1
+
+set.seed(1492)
+# Use the expand.grid to specify the search space	
+grid <- expand.grid(sigma = c(.04, .06, 0.08, .1, .12),
+                    C = c(0.4, .45, .5, .55, .6))
+
+svm.tune2 <- train(x=xvars,
+                    y= thorsurg$RISK1YR,
+                    method = "svmRadial",
+                    preProc = c("center","scale"),
+                    metric="ROC",
+                    tuneGrid = grid,
+                    trControl=ctrl)
+
+svm.tune2
+
+#ROC
+svm.pred2 <- predict(svm.tune2, type="prob")
+roc.svm2 <- roc(risk.num, svm.pred2[,1])
+
+#Youden's
+
+youd.svm2 <- coords(roc.svm2, x = "best", best.method = "youden", ret = c("threshold", "specificity", "sensitivity", "accuracy", "npv", "ppv", "fn", "fp"))
+round(youd.svm2,2)
+ysvm <- round(youd.svm2[1],2)
+
+#plot
+plot(roc.svm2, print.thres=ysvm, print.auc=TRUE)
+```
+
+
+SVM using SMOTE
+
+AUC: 0.905
+
+Sensitivity: 0.914
+
+Specificity: 0.915
+
+```{r}
+set.seed(456)
+svm.tune3 <- train(x=xvars,
+                  y= as.factor(thorsurg$RISK1YR),
+                  method = "svmRadial",   # Radial kernel
+                  tuneLength = 9,					# 9 values of the cost function
+                  preProc = c("center","scale"),  # Center and scale data
+                  metric="ROC",
+                  trControl=ctrl.smote)
+
+#ROC
+svm.pred3 <- predict(svm.tune3,type="prob")
+roc.svm3 <- roc(risk.num, svm.pred3[,1])
+
+#Youden's
+youd.svm3 <- coords(roc.svm3, x = "best", best.method = "youden", ret = c("threshold", "specificity", "sensitivity", "accuracy", "npv", "ppv", "fn", "fp"))
+round(youd.svm3,2)
+ysvm3 <- round(youd.svm3[1],2)
+
+#plot
+plot(roc.svm3,print.thres=ysvm3,print.auc=TRUE)
+
+#confusion matrices
+confusion.matrix(risk.num, svm.pred2[,1], threshold=ysvm)
+confusion.matrix(risk.num, svm.pred3[,1], threshold=ysvm3)
+```
+
+GBM (smote-free)
+
+AUC: 0.770
+
+Sens: 0.829
+
+Spec: 0.665
+```{r}
+set.seed(56)
+gbm1 <- train(x=xvars, y=thorsurg$RISK1YR, method="gbm", distribution="bernoulli", metric="ROC", trControl=ctrl, verbose=FALSE)
+
+pred.gbm1 <- predict(gbm1, type="prob")
+roc.gbm1 <- roc(risk.num, pred.gbm1[,1])
+
+youd.gbm1 <- coords(roc.gbm1, x = "best", 
+                   best.method = "youden", 
+                   ret = c("threshold", "specificity", 
+                           "sensitivity")) 
+
+round(youd.gbm1,2)
+ygbm1 <- round(youd.gbm1[1],2)
+
+#plot
+plot(roc.gbm1,print.thres=ygbm1,print.auc=TRUE)
+```
+
+GBM with SMOTE
+
+AUC: 0.721
+
+Sens: 0.700
+
+Spec: 0.693
+```{r}
+set.seed(565)
+gbm2 <- train(x=xvars, y=thorsurg$RISK1YR, method="gbm", distribution="bernoulli", metric="ROC", trControl=ctrl.smote, verbose=FALSE)
+
+pred.gbm2 <- predict(gbm2, type="prob")
+roc.gbm2 <- roc(risk.num, pred.gbm2[,1])
+
+youd.gbm2 <- coords(roc.gbm2, x = "best", 
+                   best.method = "youden", 
+                   ret = c("threshold", "specificity", 
+                           "sensitivity")) 
+
+round(youd.gbm2,2)
+ygbm2 <- round(youd.gbm2[1],2)
+
+#plot
+plot(roc.gbm2,print.thres=ygbm2,print.auc=TRUE)
+
+#confusion matrix
+confusion.matrix(risk.num, pred.gbm1[,1], threshold=ygbm1)
+confusion.matrix(risk.num, pred.gbm2[,1], threshold=ygbm2)
+```
